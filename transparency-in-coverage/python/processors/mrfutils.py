@@ -1,8 +1,10 @@
 import os
 import csv
 import hashlib
-import json
+import asyncio
+import aiohttp
 import ijson
+import json
 import requests
 import gzip
 import logging
@@ -71,7 +73,7 @@ class MRFOpen:
             self.is_remote 
             and self.suffix == '.json'
         ):            
-            self.r = requests.get(self.loc, stream = True)
+            self.r = requests.get(self.loc, stream = True, verify = None)
             self.r.raw.decode_content = True
             self.f = self.r.raw
 
@@ -90,55 +92,72 @@ class MRFOpen:
 
         self.f.close()
 
+def build_remote_p_ref(f, npi_set = None):
 
-def _fetch_remote_p_ref(loc, npi_set):
-    """
-    Given a remote reference location 'loc', collect
-    the provider references at that location, filtering
-    them so that it only collects those with NPI numbers
-    in npi_set.
-    """
-    with MRFOpen(loc) as f:
-        builder = ijson.ObjectBuilder()
-        parser = Parser(f)
+    builder = ijson.ObjectBuilder()
+    parser = ijson.parse(f, use_float = True)
+    for prefix, event, value in parser:
 
-        for prefix, event, value in parser:
+        if prefix.endswith('npi.item'):
+            value = int(value)
 
-            if (
-                prefix.endswith('npi.item')
-                and npi_set
-                and value not in npi_set
-            ):
-                continue
+        if (
+            prefix.endswith('npi.item')
+            and npi_set
+            and value not in npi_set
+        ):
+            continue
 
-            elif (
-                prefix.endswith('provider_groups.item')
-                and event == 'end_map'
-            ):
-                if not builder.value['provider_groups'][-1]['npi']:
-                    builder.value['provider_groups'].pop()
+        elif (
+            prefix.endswith('provider_groups.item')
+            and event == 'end_map'
+        ):
+            if not builder.value['provider_groups'][-1]['npi']:
+                builder.value['provider_groups'].pop()
 
-            builder.event(event, value)
+        builder.event(event, value)
+
+    if not builder.value['provider_groups']:
+        return
 
     return builder.value
 
+async def fetch_remote_p_ref(
+    session,
+    p_ref_id,
+    p_ref_url,
+    npi_set,
+):
 
-def _collect_remote_p_refs(remote_p_refs, npi_set):
-    """
-    Given a list of remote provider references, fetch
-    them individually and build them. Return them as local
-    provider references.
-    """
-    p_refs = []
+    async with session.get(p_ref_url) as response:
+        log.info(f'Opened remote provider reference url:{p_ref_url}')
+        assert response.status == 200
+        r = await response.read()
 
-    for p_ref in remote_p_refs:
-        loc = p_ref.get('location')
-        provider_group_id = p_ref['provider_group_id']
-        remote_p_ref = _fetch_remote_p_ref(loc, npi_set)
-        remote_p_ref['provider_group_id'] = provider_group_id
-        p_refs.append(remote_p_ref)
+        data = build_remote_p_ref(r, npi_set)
+        if not data:
+            return
 
-    return p_refs
+        data['provider_group_id'] =  p_ref_id
+
+        return data
+
+async def _collect_remote_p_refs(remote_p_refs, npi_set):
+
+    tasks = []
+
+    async with aiohttp.client.ClientSession() as s:
+        for p_ref in remote_p_refs:
+            p_ref_id, p_ref_url = p_ref['provider_group_id'], p_ref['location']
+
+            tasks.append(
+                asyncio.wait_for(
+                    fetch_remote_p_ref(s, p_ref_id, p_ref_url, npi_set),
+                    timeout = 5))
+
+        p_refs = await asyncio.gather(*tasks)
+
+        return [p_ref for p_ref in p_refs if p_ref]
 
 
 class MRFObjectBuilder:
@@ -208,7 +227,7 @@ class MRFObjectBuilder:
 
             builder.event(event, value)
 
-    def collect_p_refs(self, npi_set):
+    async def collect_p_refs(self, npi_set):
         """
         Collects the provider references into a map. This replaces
         "provider_group_id" with provider groups
@@ -218,7 +237,7 @@ class MRFObjectBuilder:
         local_p_refs, remote_p_refs = self._prepare_provider_refs(npi_set)
 
         local_p_refs.extend(
-            _collect_remote_p_refs(remote_p_refs, npi_set)
+            await _collect_remote_p_refs(remote_p_refs, npi_set)
         )
 
         return {
@@ -458,7 +477,7 @@ def hashdict(data, n_bytes = 8):
     return hash_i
 
 
-def flatten_mrf(
+async def flatten_mrf(
         loc: str,
         npi_set: set,
         code_set: set,
@@ -503,7 +522,7 @@ def flatten_mrf(
 
         # Case 1. The MRF has its provider references at the top
         if m.parser.current == ('', 'map_key', 'provider_references'):
-            p_refs_map = m.collect_p_refs(npi_set)
+            p_refs_map = await m.collect_p_refs(npi_set)
             m.ffwd(('', 'map_key', 'in_network'))
             for item in m.in_network_items(npi_set, code_set, p_refs_map):
                 writer.write_in_network_item(item, root_hash)
@@ -519,7 +538,7 @@ def flatten_mrf(
                      'Checking at end of file')
             try:
                 m.ffwd(('', 'map_key', 'provider_references'))
-                p_refs_map = m.collect_p_refs(npi_set)
+                p_refs_map = await m.collect_p_refs(npi_set)
             except:
                 p_refs_map = None
 
