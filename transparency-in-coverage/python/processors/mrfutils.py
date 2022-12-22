@@ -189,7 +189,7 @@ async def _collect_remote_p_refs(
 
 			tasks.append(task)
 
-		p_refs = await tqdm.gather(*tasks)
+		p_refs = await tqdma.gather(*tasks)
 
 		return [
 			p_ref for p_ref in p_refs
