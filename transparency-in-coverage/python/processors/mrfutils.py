@@ -11,6 +11,8 @@ import logging
 from urllib.parse import urlparse
 from pathlib import Path
 from schema import SCHEMA
+from tqdm import tqdm
+from tqdm.asyncio import tqdm as tqdma
 
 log = logging.getLogger(__name__)
 log.setLevel(logging.DEBUG)
@@ -146,7 +148,7 @@ async def fetch_remote_p_ref(
 
 		data['provider_group_id'] = p_ref_id
 
-		for g in data['provider_groups']:
+		for g in tqdm(data['provider_groups'], desc="Provider groups"):
 			g['npi'] = [str(n) for n in g['npi']]
 			g['npi'] = [n for n in g['npi'] if n in npi_set]
 
@@ -171,7 +173,7 @@ async def _collect_remote_p_refs(
 	'''
 	tasks = []
 	async with aiohttp.client.ClientSession() as session:
-		for p in remote_p_refs:
+		for p in tqdm(remote_p_refs, desc="Remote P refs"):
 			p_ref_id = p['provider_group_id']
 			p_ref_loc = p['location']
 
@@ -187,7 +189,7 @@ async def _collect_remote_p_refs(
 
 			tasks.append(task)
 
-		p_refs = await asyncio.gather(*tasks)
+		p_refs = await tqdm.gather(*tasks)
 
 		return [
 			p_ref for p_ref in p_refs
@@ -231,7 +233,7 @@ class MRFObjectBuilder:
 		remote_p_refs = []
 		builder = ijson.ObjectBuilder()
 
-		for prefix, event, value in self.parser:
+		for prefix, event, value in tqdm(self.parser, desc="Prepare Provider Refs"):
 
 			if (prefix, event) == (
 			'provider_references', 'end_array'):
@@ -308,7 +310,7 @@ class MRFObjectBuilder:
 		"""
 		builder = ijson.ObjectBuilder()
 
-		for prefix, event, value in self.parser:
+		for prefix, event, value in tqdm(self.parser, desc="Parser"):
 
 			if (prefix, event, value) == (
 			'in_network', 'end_array', None):
@@ -347,7 +349,7 @@ class MRFObjectBuilder:
 				(prefix, event) == ('in_network.item.negotiated_rates', 'end_array')
 				and not builder.value[-1]['negotiated_rates']
 			):
-				log.info(f"Skipping {bct} {bc}: no providers")
+				log.debug(f"Skipping {bct} {bc}: no providers")
 
 				builder.value.pop()
 				builder.containers.pop()
@@ -439,7 +441,7 @@ class MRFWriter:
 		file_loc = f'{self.out_dir}/{filename}.csv'
 		file_exists = os.path.exists(file_loc)
 
-		with open(file_loc, 'a') as f:
+		with open(file_loc, 'a', newline="") as f:
 			writer = csv.DictWriter(f, fieldnames=fieldnames)
 			if not file_exists:
 				writer.writeheader()
@@ -589,6 +591,7 @@ def flatten_mrf(
 			try:
 				m.ffwd(('', 'map_key', 'provider_references'))
 				p_refs_map = m.collect_p_refs(npi_set)
+				log.info('Found provider references')
 			except Exception:
 				log.info('No provider references in this file')
 				p_refs_map = None
