@@ -29,8 +29,6 @@ import ijson
 import requests
 
 from schema import SCHEMA
-from tqdm import tqdm
-from tqdm.asyncio import tqdm as tqdma
 
 # You can remove this if necessary, but be warned
 try:
@@ -409,7 +407,7 @@ async def _fetch_remote_provider_references(
 	tasks = []
 	connector = aiohttp.TCPConnector(limit_per_host=10)
 	async with aiohttp.client.ClientSession(connector = connector) as session:
-		for unfetched_provider_reference in tqdm(unfetched_provider_references, desc=f"{pos}: Remote P refs", position=int(pos)):
+		for unfetched_provider_reference in unfetched_provider_references:
 			provider_group_id = unfetched_provider_reference['provider_group_id']
 			provider_reference_loc = unfetched_provider_reference['location']
 
@@ -425,7 +423,7 @@ async def _fetch_remote_provider_references(
 
 			tasks.append(task)
 
-		fetched_references = await tqdma.gather(*tasks, desc=f"{pos}: Fetching References", position=int(pos))
+		fetched_references = await asyncio.gather(*tasks)
 
 		fetched_references = [item for item in fetched_references if item]
 
@@ -600,7 +598,7 @@ def _make_provider_reference_map(
 	provider_references = ijson.ObjectBuilder()
 	provider_references.event('start_array', None)
 
-	for prefix, event, value in tqdm(parser, desc=f"{pos}: Provider Reference Map", position=int(pos)):
+	for prefix, event, value in parser:
 		provider_references.event(event, value)
 		if (prefix, event) == ('provider_references.item', 'end_map'):
 			unprocessed_reference = provider_references.value.pop()
@@ -649,7 +647,7 @@ def _in_network_items(
 
 	in_network_items = ijson.ObjectBuilder()
 	in_network_items.event('start_array', None)
-	for prefix, event, value in tqdm(parser, desc=f"{pos}: In Network Items gen", position=int(pos)):
+	for prefix, event, value in parser:
 		in_network_items.event(event, value)
 
 		# This line can be commented out! but it's faster with it in
