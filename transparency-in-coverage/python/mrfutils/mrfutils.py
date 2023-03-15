@@ -738,15 +738,10 @@ def gen_plan_file(parser):
 		elif (prefix, event, value) == ('reporting_structure', 'end_array', None):
 			return
 
-def write_plan_file(plan_file, toc_id, out_dir):
-
-	if not plan_file.get('in_network_files'):
-		return
-
+def write_plan_file(plan_file, toc_id, out_dir, plan_file_set):
 	toc_plan_file_link = dicthasher(plan_file)
 	plan_rows = []
 	file_rows = []
-
 	for plan in plan_file['reporting_plans']:
 
 		plan_row = append_hash(plan, 'id')
@@ -766,18 +761,11 @@ def write_plan_file(plan_file, toc_id, out_dir):
 		file_row['toc_id'] = toc_id
 		file_row['url'] = url
 		file_row['description'] = file['description']
+		
+		if file_row['id'] not in plan_file_set:
+			write_table(file_row, 'toc_file', out_dir)
+			file_rows.append(file_row)
 
-		write_table(file_row, 'toc_file', out_dir)
-		file_rows.append(file_row)
-
-	for plan_row in plan_rows:
-		for file_row in file_rows:
-			toc_plan_file_row = dict(
-				link = toc_plan_file_link,
-				toc_file_id = file_row['id'],
-				toc_plan_id = plan_row['id'],
-			)
-			write_table(toc_plan_file_row, 'toc_plan_file', out_dir)
 
 def toc_file_to_csv(
 	url: str,
@@ -801,10 +789,11 @@ def toc_file_to_csv(
 		toc_row['url'] = url
 		toc_id = toc_row['id']
 		metadata = ijson.ObjectBuilder()
+		plan_file_set = set()
 		for prefix, event, value in parser:
 			if (prefix, event, value) == ('reporting_structure', 'start_array', None):
 				for plan_file in gen_plan_file(parser):
-					write_plan_file(plan_file, toc_id, out_dir)
+					write_plan_file(plan_file, toc_id, out_dir, plan_file_set)
 			else:
 				metadata.event(event, value)
 	toc_row.update(metadata.value)
